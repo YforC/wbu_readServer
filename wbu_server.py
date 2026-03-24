@@ -8,7 +8,153 @@ import os
 import re
 import shutil
 import logging
+import hashlib
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+# ==================== Fingerprint Disguise System ====================
+
+# Realistic User-Agent pool (updated desktop browsers)
+UA_POOL = [
+    # Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    # Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+    # Firefox on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    # Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+]
+
+# Common screen resolutions for realistic viewport
+VIEWPORT_POOL = [
+    {"width": 1920, "height": 1080},
+    {"width": 1366, "height": 768},
+    {"width": 1536, "height": 864},
+    {"width": 1440, "height": 900},
+    {"width": 1280, "height": 720},
+    {"width": 1600, "height": 900},
+    {"width": 1680, "height": 1050},
+    {"width": 2560, "height": 1440},
+    {"width": 1360, "height": 768},
+    {"width": 1280, "height": 800},
+]
+
+# Locales pool (only Chinese)
+LOCALE_POOL = ["zh-CN"]
+TIMEZONE_POOL = ["Asia/Shanghai", "Asia/Shanghai", "Asia/Chongqing", "Asia/Harbin"]
+
+# Sec-CH-UA variants (matching UA versions)
+SEC_CH_UA_POOL = [
+    '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    '"Chromium";v="121", "Not)A;Brand";v="99", "Google Chrome";v="121"',
+    '"Chromium";v="120", "Not_A Brand";v="8", "Google Chrome";v="120"',
+    '"Chromium";v="122", "Microsoft Edge";v="122", "Not(A:Brand";v="24"',
+    '"Chromium";v="123", "Not(A:Brand";v="24", "Google Chrome";v="123"',
+]
+
+def generate_fingerprint(username):
+    """Generate a deterministic but unique fingerprint for each account.
+    Uses username as seed so the same account always gets the same fingerprint,
+    appearing as a consistent real user rather than a rotating bot."""
+    seed = int(hashlib.md5(username.encode()).hexdigest(), 16)
+    rng = random.Random(seed)
+
+    ua = rng.choice(UA_POOL)
+    viewport = rng.choice(VIEWPORT_POOL)
+    locale = rng.choice(LOCALE_POOL)
+    timezone = rng.choice(TIMEZONE_POOL)
+    sec_ch_ua = rng.choice(SEC_CH_UA_POOL)
+
+    # Platform hint based on UA
+    if "Macintosh" in ua:
+        platform = "macOS"
+        sec_ch_platform = '"macOS"'
+    else:
+        platform = "Windows"
+        sec_ch_platform = '"Windows"'
+
+    # Slight random variation in viewport (like window not maximized)
+    vp_w = viewport["width"] - rng.randint(0, 40)
+    vp_h = viewport["height"] - rng.randint(0, 60)
+
+    return {
+        "user_agent": ua,
+        "viewport": {"width": vp_w, "height": vp_h},
+        "locale": locale,
+        "timezone_id": timezone,
+        "sec_ch_ua": sec_ch_ua,
+        "sec_ch_platform": sec_ch_platform,
+        "platform": platform,
+        "device_scale_factor": rng.choice([1, 1, 1.25, 1.5, 2]),
+        "color_depth": rng.choice([24, 24, 32]),
+        "hardware_concurrency": rng.choice([4, 8, 8, 12, 16]),
+        "device_memory": rng.choice([4, 8, 8, 16]),
+    }
+
+def build_heartbeat_headers(token, twfid, fingerprint):
+    """Build HTTP headers matching real browser request."""
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9,en-GB;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Cookie": f"TWFID={twfid}; yuedu_token={token}",
+        "Host": "ydpj-wbu-edu-cn-8008-p.webvpn.wbu.edu.cn:8118",
+        "Origin": "http://ydpj-wbu-edu-cn-8008-p.webvpn.wbu.edu.cn:8118",
+        "Pragma": "no-cache",
+        "Proxy-Connection": "keep-alive",
+        "Qd-Authorization": f"Bearer {token}",
+        "Referer": "http://ydpj-wbu-edu-cn-8008-p.webvpn.wbu.edu.cn:8118/",
+        "User-Agent": fingerprint["user_agent"],
+    }
+    return headers
+
+def human_like_delay(min_sec=1.0, max_sec=3.0):
+    """Generate human-like random delay with slight gaussian distribution."""
+    mean = (min_sec + max_sec) / 2
+    std = (max_sec - min_sec) / 4
+    delay = max(min_sec, min(max_sec, random.gauss(mean, std)))
+    return delay
+
+def get_heartbeat_interval():
+    """Get heartbeat interval: 55-60 seconds."""
+    return random.randint(55, 60)
+
+def get_read_speed():
+    """Return readSpeed in range 0-1500. 0 means idle (not scrolling)."""
+    return random.randint(0, 1500)
+
+# Browser stealth injection script
+STEALTH_JS = '''
+// Override navigator properties to mask headless detection
+Object.defineProperty(navigator, 'webdriver', { get: () => false });
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5].map(() => ({ length: 1 }))
+});
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['zh-CN', 'zh', 'en-US', 'en']
+});
+window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+
+// Override permissions
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) =>
+    parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+
+// Mask automation detection
+delete navigator.__proto__.webdriver;
+'''
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -83,14 +229,36 @@ def is_account_active(username):
 # --- browser capture: open browser -> login -> grab token/readerID -> close browser ---
 def browser_capture(username, password, book_id):
     user_data_dir = f"./browser_data_{username}"
+    fp = generate_fingerprint(username)
+    logging.info(f"[{username}] Fingerprint: UA={fp['user_agent'][:50]}..., VP={fp['viewport']}, Locale={fp['locale']}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            user_agent=fp["user_agent"],
+            viewport=fp["viewport"],
+            locale=fp["locale"],
+            timezone_id=fp["timezone_id"],
+            device_scale_factor=fp["device_scale_factor"],
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                f'--lang={fp["locale"]}',
+            ]
         )
         try:
             page = browser.new_page()
+            # Inject stealth script to bypass headless detection
+            page.add_init_script(STEALTH_JS)
+            # Override hardware fingerprint properties per account
+            page.add_init_script(f'''
+                Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {fp["hardware_concurrency"]} }});
+                Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {fp["device_memory"]} }});
+                Object.defineProperty(screen, 'colorDepth', {{ get: () => {fp["color_depth"]} }});
+            ''')
             page.on("console", lambda msg: logging.info(f"[{username}] BROWSER: {msg.text}"))
 
             # === WebVPN login ===
@@ -272,20 +440,15 @@ def heartbeat_loop(username, book_id, token, twfid, reader_id):
         recapture_flags[username] = False
         return "recapture"
 
+    fp = generate_fingerprint(username)
     start_time = time.time()
     last_tick = time.time()
     loop_duration = 9000
     url_reading = "http://ydpj-wbu-edu-cn-8008-p.webvpn.wbu.edu.cn:8118/server/book/reading"
-    headers = {
-        "Host": "ydpj-wbu-edu-cn-8008-p.webvpn.wbu.edu.cn:8118",
-        "Accept": "application/json, text/plain, */*",
-        "Qd-Authorization": f"Bearer {token}",
-        "Cookie": f"TWFID={twfid}; yuedu_token={token}",
-        "X-Requested-With": "XMLHttpRequest"
-    }
+    headers = build_heartbeat_headers(token, twfid, fp)
 
     consecutive_failures = 0
-    max_failures = 5
+    max_failures = 3
     while time.time() - start_time < loop_duration:
         if not is_account_active(username):
             break
@@ -295,37 +458,93 @@ def heartbeat_loop(username, book_id, token, twfid, reader_id):
             logging.info(f"[{username}] Recapture requested, exiting heartbeat")
             return "recapture"
 
-        speed = random.randint(1200, 1500)
+        speed = get_read_speed()
         try:
+            # Use multipart/form-data to match real browser behavior
             res = requests.post(url_reading, params={"sf_request_type": "ajax"},
                 headers=headers,
-                data={"bookReaderId": reader_id, "bookId": book_id, "readSpeed": str(speed)},
+                files={
+                    "bookReaderId": (None, str(reader_id)),
+                    "bookId": (None, str(book_id)),
+                    "readSpeed": (None, str(speed)),
+                },
                 timeout=20)
+
+            # --- Error detection ---
+            # 1. Session expired (redirected to login page)
             if "<html>" in res.text:
-                logging.warning(f"[{username}] Session expired.")
+                logging.warning(f"[{username}] Session expired (got HTML redirect).")
+                update_account_status(username, "Session expired, will re-auth...")
                 return "expired"
+
+            # 2. Auth errors - stop immediately
+            if res.status_code in (401, 403):
+                logging.error(f"[{username}] Auth error: HTTP {res.status_code}")
+                update_account_status(username, f"Stopped: Auth error ({res.status_code})")
+                def _stop_auth(db):
+                    if username in db:
+                        db[username]["active"] = False
+                with_db(_stop_auth)
+                return "auth_error"
+
+            # 3. Server error - count failures
             if res.status_code != 200:
                 consecutive_failures += 1
+                logging.warning(f"[{username}] HTTP {res.status_code} ({consecutive_failures}/{max_failures})")
             else:
-                consecutive_failures = 0
-                now_t = time.time()
-                delta = now_t - last_tick
-                last_tick = now_t
-                elapsed = int((now_t - start_time) / 60)
-                def _beat(db, _delta=delta, _elapsed=elapsed, _speed=speed):
-                    if username in db:
-                        db[username]["last_beat"] = time.strftime("%H:%M:%S")
-                        db[username]["total_seconds"] = db[username].get("total_seconds", 0) + _delta
-                        db[username]["status"] = f"Running ({_elapsed}min, Speed: {_speed})"
-                with_db(_beat)
+                # 4. Check response JSON code
+                try:
+                    resp_json = res.json()
+                    resp_code = resp_json.get("code")
+                    if resp_code != 200:
+                        consecutive_failures += 1
+                        msg = resp_json.get("message", "unknown")
+                        logging.warning(f"[{username}] API error: code={resp_code}, msg={msg} ({consecutive_failures}/{max_failures})")
+                        if resp_code in (401, 403, -1):
+                            # Critical API error, stop account
+                            logging.error(f"[{username}] Critical API error, stopping.")
+                            update_account_status(username, f"Stopped: API error (code={resp_code}, {msg})")
+                            def _stop_api(db):
+                                if username in db:
+                                    db[username]["active"] = False
+                            with_db(_stop_api)
+                            return "api_error"
+                    else:
+                        # Success
+                        consecutive_failures = 0
+                        now_t = time.time()
+                        delta = now_t - last_tick
+                        last_tick = now_t
+                        elapsed = int((now_t - start_time) / 60)
+                        def _beat(db, _delta=delta, _elapsed=elapsed, _speed=speed):
+                            if username in db:
+                                db[username]["last_beat"] = time.strftime("%H:%M:%S")
+                                db[username]["total_seconds"] = db[username].get("total_seconds", 0) + _delta
+                                db[username]["status"] = f"Running ({_elapsed}min, Speed: {_speed})"
+                        with_db(_beat)
+                except (json.JSONDecodeError, ValueError):
+                    consecutive_failures += 1
+                    logging.warning(f"[{username}] Invalid JSON response ({consecutive_failures}/{max_failures}): {res.text[:100]}")
+
+        except requests.exceptions.Timeout:
+            consecutive_failures += 1
+            logging.warning(f"[{username}] Request timeout ({consecutive_failures}/{max_failures})")
+        except requests.exceptions.ConnectionError as e:
+            consecutive_failures += 1
+            logging.warning(f"[{username}] Connection error ({consecutive_failures}/{max_failures}): {e}")
         except Exception as e:
             consecutive_failures += 1
             logging.warning(f"[{username}] Heartbeat fail ({consecutive_failures}/{max_failures}): {e}")
 
         if consecutive_failures >= max_failures:
-            logging.warning(f"[{username}] Too many failures.")
+            logging.error(f"[{username}] {max_failures} consecutive failures, stopping account.")
+            update_account_status(username, f"Stopped: {max_failures} consecutive request failures")
+            def _stop_fail(db):
+                if username in db:
+                    db[username]["active"] = False
+            with_db(_stop_fail)
             return "failed"
-        time.sleep(random.randint(60, 90))
+        time.sleep(get_heartbeat_interval())
 
     elapsed_total = int((time.time() - start_time) / 60)
     logging.info(f"[{username}] Heartbeat ended after {elapsed_total}min")
@@ -386,12 +605,19 @@ def manager_thread():
     while True:
         try:
             db = load_db()
+            newly_started = 0
             for u, info in db.items():
                 if info.get("active") and info.get("password") and info.get("book_id"):
                     if u not in active_threads or not active_threads[u].is_alive():
+                        # Stagger account startups to avoid concurrent burst
+                        if newly_started > 0:
+                            stagger = random.uniform(5, 15)
+                            logging.info(f"[Manager] Staggering start for {u} by {stagger:.1f}s")
+                            time.sleep(stagger)
                         t = threading.Thread(target=playwright_worker, args=(u,), daemon=True)
                         t.start()
                         active_threads[u] = t
+                        newly_started += 1
         except Exception as e:
             logging.error(f"Manager error: {e}")
         time.sleep(10)
@@ -536,11 +762,24 @@ HTML_TEMPLATE = '''
 
         .actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
 
+        /* Search bar */
+        .search-bar {
+            display: flex; gap: 8px; align-items: center; margin-bottom: 14px;
+        }
+        .search-bar input {
+            flex: 1; max-width: 300px; padding: 8px 12px; border: 1px solid #d1d5db;
+            border-radius: 6px; font-size: 13px; outline: none; transition: border 0.15s;
+        }
+        .search-bar input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+        .search-bar .search-icon { color: #9ca3af; font-size: 14px; }
+        .search-bar .result-count { font-size: 12px; color: #9ca3af; }
+
         @media (max-width: 640px) {
             .add-row { flex-direction: column; }
             .add-row input, .add-row input.w-sm { width: 100%; flex: auto; }
             .sms-card { flex-direction: column; align-items: flex-start; }
             .actions { justify-content: flex-start; }
+            .search-bar input { max-width: 100%; }
         }
     </style>
 </head>
@@ -585,6 +824,11 @@ HTML_TEMPLATE = '''
         <div class="card">
             <div class="card-header">Accounts</div>
             {% if db %}
+            <div class="search-bar">
+                <span class="search-icon">&#128269;</span>
+                <input type="text" id="searchInput" placeholder="搜索学号..." oninput="filterAccounts()">
+                <span class="result-count" id="resultCount">共 {{ db|length }} 个账号</span>
+            </div>
             <table class="tbl">
                 <thead><tr>
                     <th>ID</th>
@@ -595,12 +839,12 @@ HTML_TEMPLATE = '''
                     <th>SMS</th>
                     <th style="text-align:right;">Actions</th>
                 </tr></thead>
-                <tbody>
+                <tbody id="accountsBody">
                 {% for n, i in db.items() %}
                     {% set is_err = 'Error' in i.status or 'Failed' in i.status %}
                     {% set is_run = 'Running' in i.status or 'Heartbeat' in i.status %}
                     {% set is_stop = not i.active %}
-                    <tr>
+                    <tr data-uid="{{ n }}">
                         <td style="font-weight:600;">{{ n }}</td>
                         <td>
                             <div class="book-display" id="bd-{{ n }}" onclick="toggleEdit('{{ n }}')">
@@ -688,6 +932,29 @@ HTML_TEMPLATE = '''
             } else {
                 d.style.display = '';
                 e.style.display = 'none';
+            }
+        }
+
+        function filterAccounts() {
+            var query = document.getElementById('searchInput').value.trim().toLowerCase();
+            var rows = document.querySelectorAll('#accountsBody tr[data-uid]');
+            var shown = 0;
+            rows.forEach(function(row) {
+                var uid = row.getAttribute('data-uid').toLowerCase();
+                if (!query || uid.indexOf(query) !== -1) {
+                    row.style.display = '';
+                    shown++;
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+            var countEl = document.getElementById('resultCount');
+            if (countEl) {
+                if (query) {
+                    countEl.textContent = '找到 ' + shown + ' 个匹配';
+                } else {
+                    countEl.textContent = '共 ' + rows.length + ' 个账号';
+                }
             }
         }
 
