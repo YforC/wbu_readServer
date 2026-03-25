@@ -9,6 +9,7 @@ import re
 import shutil
 import logging
 import hashlib
+from datetime import datetime, time as dt_time, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # ==================== Fingerprint Disguise System ====================
@@ -128,6 +129,36 @@ def human_like_delay(min_sec=1.0, max_sec=3.0):
 def get_heartbeat_interval():
     """Get heartbeat interval: 55-60 seconds."""
     return random.randint(55, 60)
+
+HEARTBEAT_ACTIVE_START = dt_time(6, 30)
+HEARTBEAT_ACTIVE_END = dt_time(23, 30)
+
+def is_within_heartbeat_window(now=None):
+    """Allow heartbeats only during daytime reading hours."""
+    now = now or datetime.now()
+    current_time = now.time()
+    return HEARTBEAT_ACTIVE_START <= current_time < HEARTBEAT_ACTIVE_END
+
+def get_next_heartbeat_window_start(now=None):
+    """Return the next datetime when heartbeats may resume."""
+    now = now or datetime.now()
+    today_start = datetime.combine(now.date(), HEARTBEAT_ACTIVE_START)
+    if now < today_start:
+        return today_start
+    return datetime.combine(now.date() + timedelta(days=1), HEARTBEAT_ACTIVE_START)
+
+def wait_until_heartbeat_window(username):
+    """Pause worker outside active hours while keeping the account enabled."""
+    while is_account_active(username) and not is_within_heartbeat_window():
+        next_start = get_next_heartbeat_window_start()
+        wait_seconds = max(5, int((next_start - datetime.now()).total_seconds()))
+        wait_minutes = max(1, wait_seconds // 60)
+        update_account_status(
+            username,
+            f"Sleeping until {next_start.strftime('%m-%d %H:%M')} ({wait_minutes}min left)"
+        )
+        sleep_chunk = min(wait_seconds, random.randint(45, 90))
+        time.sleep(sleep_chunk)
 
 def get_read_speed():
     """Return readSpeed in range 0-1500. 0 means idle (not scrolling)."""
@@ -452,6 +483,11 @@ def heartbeat_loop(username, book_id, token, twfid, reader_id):
     while time.time() - start_time < loop_duration:
         if not is_account_active(username):
             break
+        if not is_within_heartbeat_window():
+            next_start = get_next_heartbeat_window_start()
+            update_account_status(username, f"Paused for night, resumes at {next_start.strftime('%m-%d %H:%M')}")
+            logging.info(f"[{username}] Outside heartbeat window, pausing until {next_start.strftime('%Y-%m-%d %H:%M:%S')}")
+            return "outside_window"
         # Check recapture flag each iteration
         if recapture_flags.get(username):
             recapture_flags[username] = False
@@ -555,6 +591,9 @@ def playwright_worker(username):
     while True:
         if not is_account_active(username):
             break
+        wait_until_heartbeat_window(username)
+        if not is_account_active(username):
+            break
         # Re-read credentials from DB each iteration (book_id may have changed)
         db = load_db()
         info = db.get(username, {})
@@ -581,6 +620,8 @@ def playwright_worker(username):
             logging.info(f"[{username}] Heartbeat result: {result}, will re-capture...")
             if result == "recapture":
                 update_account_status(username, "Recapturing tokens...")
+            elif result == "outside_window":
+                update_account_status(username, "Paused outside heartbeat window")
             else:
                 update_account_status(username, "Session ended, re-authenticating...")
             time.sleep(5)
